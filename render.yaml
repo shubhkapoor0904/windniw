@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: northstar-wind-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: WIND_CORS_ORIGINS
+        sync: false
+      - key: WIND_CACHE_DB
+        value: /app/data/cache.db

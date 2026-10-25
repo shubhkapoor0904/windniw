@@ -1,9 +1,7 @@
 """Tests for forecast selection logic."""
 
-import pytest
 import pandas as pd
-import numpy as np
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timezone
 
 from app.analytics.selection import (
     compute_cutoff_time,
@@ -40,6 +38,15 @@ class TestComputeCutoffTime:
         """Cutoff must be timezone-aware (UTC)."""
         cutoff = compute_cutoff_time(date(2026, 1, 15))
         assert cutoff.tzinfo is not None
+
+    def test_cutoff_supports_minutes(self):
+        cutoff = compute_cutoff_time(date(2026, 1, 2), 9, 45)
+        assert (cutoff.hour, cutoff.minute) == (9, 45)
+
+    def test_cutoff_respects_london_dst(self):
+        """On the spring clock-change weekend 09:00 London is 08:00 UTC."""
+        cutoff = compute_cutoff_time(date(2026, 3, 30), 9)
+        assert (cutoff.hour, cutoff.minute) == (8, 0)
 
 
 class TestSelectLatestForecast:

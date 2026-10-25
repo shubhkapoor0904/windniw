@@ -1,6 +1,5 @@
 """Tests for accuracy metrics."""
 
-import pytest
 import pandas as pd
 import numpy as np
 
@@ -138,6 +137,13 @@ class TestComputeAllMetrics:
         result = compute_all_metrics(forecast, actual)
         assert result["count"] == 2  # Only 2 valid pairs
 
+    def test_missing_pairs_are_not_reported_as_zero_accuracy(self):
+        result = compute_all_metrics(pd.Series([np.nan]), pd.Series([10.0]))
+        assert result["count"] == 0
+        assert result["mae"] is None
+        assert result["bias"] is None
+        assert result["mape"] is None
+
 
 class TestErrorDistribution:
     def test_histogram_structure(self):
@@ -148,4 +154,8 @@ class TestErrorDistribution:
 
     def test_empty_returns_empty(self):
         errors = pd.Series([], dtype=float)
+        assert compute_error_distribution(errors) == []
+
+    def test_all_missing_returns_empty(self):
+        errors = pd.Series([np.nan, np.nan])
         assert compute_error_distribution(errors) == []

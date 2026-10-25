@@ -8,9 +8,7 @@ available to the buyer when they make their procurement decision.
 """
 
 import pandas as pd
-import numpy as np
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional, Tuple
 import pytz
 
 LONDON_TZ = pytz.timezone("Europe/London")
@@ -19,6 +17,7 @@ LONDON_TZ = pytz.timezone("Europe/London")
 def compute_cutoff_time(
     target_date: date,
     cutoff_hour: int = 9,
+    cutoff_minute: int = 0,
 ) -> datetime:
     """Compute the decision cutoff datetime for a given delivery date.
 
@@ -29,6 +28,7 @@ def compute_cutoff_time(
     Args:
         target_date: The delivery date (D)
         cutoff_hour: Hour of day in Europe/London for the cutoff (default 9)
+        cutoff_minute: Minute of day in Europe/London for the cutoff
 
     Returns:
         UTC-aware datetime representing the cutoff
@@ -36,7 +36,13 @@ def compute_cutoff_time(
     # D-1 at cutoff_hour in London time
     d_minus_1 = target_date - timedelta(days=1)
     london_cutoff = LONDON_TZ.localize(
-        datetime(d_minus_1.year, d_minus_1.month, d_minus_1.day, cutoff_hour, 0, 0)
+        datetime(
+            d_minus_1.year,
+            d_minus_1.month,
+            d_minus_1.day,
+            cutoff_hour,
+            cutoff_minute,
+        )
     )
     return london_cutoff.astimezone(timezone.utc)
 
@@ -47,7 +53,7 @@ def select_latest_forecast(
 ) -> pd.DataFrame:
     """Select the latest available forecast for each target time.
 
-    For each unique start_time (target delivery half-hour), pick the
+    For each unique start_time (target delivery interval), pick the
     forecast row with the maximum publishTime that is still <= cutoff.
 
     This represents what the buyer would actually see at decision time.

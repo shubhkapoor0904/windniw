@@ -1,6 +1,5 @@
 """Tests for horizon analysis."""
 
-import pytest
 import pandas as pd
 import numpy as np
 
@@ -8,7 +7,6 @@ from app.analytics.horizon import (
     assign_horizon_bucket,
     compute_horizon_metrics,
     compute_uncertainty_bands,
-    DEFAULT_HORIZON_BUCKETS,
 )
 
 
@@ -68,6 +66,15 @@ class TestComputeHorizonMetrics:
         df = pd.DataFrame(columns=["horizon_hours", "error_mw"])
         assert compute_horizon_metrics(df) == []
 
+    def test_missing_rows_are_ignored(self):
+        df = pd.DataFrame({
+            "horizon_hours": [1.0, np.nan],
+            "error_mw": [5.0, 20.0],
+        })
+        results = compute_horizon_metrics(df)
+        assert len(results) == 1
+        assert results[0]["count"] == 1
+
 
 class TestComputeUncertaintyBands:
     def test_basic_bands(self):
@@ -83,6 +90,8 @@ class TestComputeUncertaintyBands:
 
     def test_empty_df(self):
         df = pd.DataFrame(columns=["horizon_hours", "error_mw"])
-        p10, p90 = compute_uncertainty_bands(df, forecast_horizon=20.0)
-        assert p10 == 0.0
-        assert p90 == 0.0
+        assert compute_uncertainty_bands(df, forecast_horizon=20.0) is None
+
+    def test_no_matching_horizon_is_unavailable(self):
+        df = pd.DataFrame({"horizon_hours": [30.0], "error_mw": [100.0]})
+        assert compute_uncertainty_bands(df, forecast_horizon=10.0) is None

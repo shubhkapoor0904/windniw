@@ -62,6 +62,11 @@ def compute_horizon_metrics(
     if df.empty or "horizon_hours" not in df.columns or "error_mw" not in df.columns:
         return []
 
+    df = df[["horizon_hours", "error_mw"]].dropna()
+    df = df[np.isfinite(df["horizon_hours"]) & np.isfinite(df["error_mw"])]
+    if df.empty:
+        return []
+
     results = []
     for min_h, max_h, label in buckets:
         mask = (df["horizon_hours"] >= min_h) & (df["horizon_hours"] < max_h)
@@ -92,7 +97,7 @@ def compute_uncertainty_bands(
     df: pd.DataFrame,
     forecast_horizon: float,
     buckets: Optional[List[Tuple[float, float, str]]] = None,
-) -> Tuple[float, float]:
+) -> Optional[Tuple[float, float]]:
     """Compute P10/P90 error bands for a given forecast horizon.
 
     Used to generate uncertainty bands around the latest forecast.
@@ -115,25 +120,26 @@ def compute_uncertainty_bands(
         buckets: Custom horizon buckets
 
     Returns:
-        Tuple of (P10_error, P90_error) for the matching horizon bucket
+        Tuple of (P10_error, P90_error), or None if the horizon has no history
     """
     if buckets is None:
         buckets = DEFAULT_HORIZON_BUCKETS
 
     if df.empty:
-        return (0.0, 0.0)
+        return None
 
     # Find the matching bucket
     for min_h, max_h, label in buckets:
         if min_h <= forecast_horizon < max_h:
             mask = (df["horizon_hours"] >= min_h) & (df["horizon_hours"] < max_h)
             bucket_data = df[mask]
+            bucket_data = bucket_data.dropna(subset=["error_mw"])
             if bucket_data.empty:
-                return (0.0, 0.0)
+                return None
             errors = bucket_data["error_mw"]
             return (
                 round(float(errors.quantile(0.10)), 2),
                 round(float(errors.quantile(0.90)), 2),
             )
 
-    return (0.0, 0.0)
+    return None

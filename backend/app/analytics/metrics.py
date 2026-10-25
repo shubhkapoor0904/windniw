@@ -6,7 +6,7 @@ Error convention: error = forecast - actual (positive = over-forecast).
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 
 def compute_error(
@@ -36,7 +36,7 @@ def compute_mae(errors: pd.Series) -> float:
     Returns:
         MAE in MW
     """
-    return float(errors.abs().mean())
+    return float(errors.dropna().abs().mean()) if errors.notna().any() else 0.0
 
 
 def compute_rmse(errors: pd.Series) -> float:
@@ -48,7 +48,8 @@ def compute_rmse(errors: pd.Series) -> float:
     Returns:
         RMSE in MW
     """
-    return float(np.sqrt((errors**2).mean()))
+    valid = errors.dropna()
+    return float(np.sqrt((valid**2).mean())) if not valid.empty else 0.0
 
 
 def compute_mape(
@@ -107,11 +108,11 @@ def compute_percentiles(
     Returns:
         Dict mapping 'p{N}' to the percentile value
     """
-    abs_errors = errors.abs()
+    abs_errors = errors.dropna().abs()
     result = {}
     for p in percentiles:
         key = f"p{int(p)}"
-        result[key] = float(abs_errors.quantile(p / 100))
+        result[key] = float(abs_errors.quantile(p / 100)) if not abs_errors.empty else 0.0
     return result
 
 
@@ -153,13 +154,13 @@ def compute_all_metrics(
 
     if valid.empty:
         return {
-            "mae": 0.0,
-            "rmse": 0.0,
+            "mae": None,
+            "rmse": None,
             "mape": None,
-            "bias": 0.0,
-            "p50_abs_error": 0.0,
-            "p90_abs_error": 0.0,
-            "p99_abs_error": 0.0,
+            "bias": None,
+            "p50_abs_error": None,
+            "p90_abs_error": None,
+            "p99_abs_error": None,
             "nmae": None,
             "count": 0,
         }
@@ -200,7 +201,11 @@ def compute_error_distribution(
     if errors.empty:
         return []
 
-    counts, bin_edges = np.histogram(errors.dropna(), bins=n_bins)
+    valid_errors = errors.dropna()
+    if valid_errors.empty:
+        return []
+
+    counts, bin_edges = np.histogram(valid_errors, bins=n_bins)
     result = []
     for i in range(len(counts)):
         result.append({

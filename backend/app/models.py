@@ -54,14 +54,15 @@ class ForecastSummary(BaseModel):
     peak_mw: float
     min_mw: float
     avg_mw: float
-    total_mwh: float = Field(description="Total energy = sum(generation * 0.5)")
+    total_mwh: float = Field(description="Total energy using observed target interval duration")
     avg_horizon_hours: float
+    interval_hours: float = Field(description="Observed forecast target interval in hours")
 
 
 # ─── Comparison ────────────────────────────────────────────
 
 class ComparisonRecord(BaseModel):
-    """Forecast vs actual comparison for a single half-hour."""
+    """Hourly forecast compared with the mean of two half-hour actuals."""
     start_time: datetime
     actual_mw: Optional[float]
     forecast_mw: Optional[float]
@@ -81,13 +82,13 @@ class ComparisonResponse(BaseModel):
 
 class AccuracyMetrics(BaseModel):
     """Aggregated accuracy metrics."""
-    mae: float = Field(description="Mean Absolute Error (MW)")
-    rmse: float = Field(description="Root Mean Square Error (MW)")
+    mae: Optional[float] = Field(description="Mean Absolute Error (MW)")
+    rmse: Optional[float] = Field(description="Root Mean Square Error (MW)")
     mape: Optional[float] = Field(None, description="Mean Absolute Percentage Error (%)")
-    bias: float = Field(description="Mean Error / bias (MW), positive = over-forecast")
-    p50_abs_error: float = Field(description="Median absolute error (MW)")
-    p90_abs_error: float = Field(description="90th percentile absolute error (MW)")
-    p99_abs_error: float = Field(description="99th percentile absolute error (MW)")
+    bias: Optional[float] = Field(description="Mean Error / bias (MW), positive = over-forecast")
+    p50_abs_error: Optional[float] = Field(description="Median absolute error (MW)")
+    p90_abs_error: Optional[float] = Field(description="90th percentile absolute error (MW)")
+    p99_abs_error: Optional[float] = Field(description="99th percentile absolute error (MW)")
     nmae: Optional[float] = Field(None, description="Normalized MAE (% of mean actual)")
     count: int = Field(description="Number of data points used")
 
@@ -97,6 +98,7 @@ class MetricsResponse(BaseModel):
     start_date: date
     end_date: date
     cutoff_hour: int
+    cutoff_minute: int = 0
     metrics: AccuracyMetrics
     error_distribution: List["ErrorBucket"]
 

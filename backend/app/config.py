@@ -1,7 +1,8 @@
 """Configuration settings for the Wind Forecast API."""
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -30,7 +31,10 @@ class Settings(BaseSettings):
     # Default decision cutoff
     default_cutoff_hour: int = 9  # 09:00 Europe/London on D-1
 
-    model_config = {"env_prefix": "WIND_", "env_file": ".env"}
+    model_config = {
+        "env_prefix": "WIND_",
+        "env_file": str(Path(__file__).resolve().parents[2] / ".env"),
+    }
 
 
 settings = Settings()

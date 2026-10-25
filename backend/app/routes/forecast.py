@@ -1,8 +1,7 @@
 """Forecast endpoints: latest forecast at decision time."""
 
 from fastapi import APIRouter, Query, HTTPException
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import date
 import pandas as pd
 
 from app.models import (
@@ -13,7 +12,7 @@ from app.models import (
 from app.data.cache import cache
 from app.analytics.selection import compute_cutoff_time, select_latest_forecast
 from app.analytics.horizon import compute_uncertainty_bands
-from app.analytics.metrics import compute_error
+from app.analytics.alignment import FORECAST_INTERVAL_HOURS, hourly_actuals
 
 router = APIRouter()
 
@@ -30,10 +29,16 @@ async def get_latest_forecast(
         le=23,
         description="Decision cutoff hour in Europe/London time (D-1). Default 09:00.",
     ),
+    cutoffMinute: int = Query(
+        0,
+        ge=0,
+        le=59,
+        description="Decision cutoff minute in Europe/London time (D-1).",
+    ),
 ) -> LatestForecastResponse:
     """Get the latest wind forecast available at decision time.
 
-    For each half-hour slot on the target delivery day, returns the most
+    For each hourly target slot on the delivery day, returns the most
     recently published forecast that was available at the decision cutoff
     (D-1 at cutoffHour in Europe/London time).
 
@@ -49,16 +54,18 @@ async def get_latest_forecast(
         raise HTTPException(400, "Target date must be in January 2026.")
 
     # Compute cutoff
-    cutoff = compute_cutoff_time(target, cutoff_hour=cutoffHour)
+    cutoff = compute_cutoff_time(
+        target, cutoff_hour=cutoffHour, cutoff_minute=cutoffMinute
+    )
 
     # Load forecasts for the target date
-    target_start = f"{target.isoformat()}T00:00:00+00:00"
-    target_end = f"{target.isoformat()}T23:59:59+00:00"
+    target_start = f"{target.isoformat()}T00:00:00Z"
+    target_end = f"{target.isoformat()}T23:59:59Z"
 
     forecasts_df = cache.get_forecasts(
         target_start=target_start,
         target_end=target_end,
-        publish_before=cutoff.isoformat(),
+        publish_before=cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
     if forecasts_df.empty:
@@ -69,19 +76,21 @@ async def get_latest_forecast(
             summary=None,
         )
 
-    # Select latest forecast for each half-hour
+    # Select latest forecast for each available hourly target.
     selected = select_latest_forecast(forecasts_df, cutoff)
 
     # Compute uncertainty bands from historical errors
     # Load all comparison data for the month to build error history
     actuals_df = cache.get_actuals("2026-01-01", "2026-01-31")
     all_forecasts_df = cache.get_forecasts(
-        target_start="2026-01-01T00:00:00+00:00",
-        target_end="2026-01-31T23:59:59+00:00",
+        target_start="2026-01-01T00:00:00Z",
+        target_end="2026-01-31T23:59:59Z",
     )
 
     # Build historical error data per horizon
-    error_data = _build_error_history(actuals_df, all_forecasts_df, cutoffHour)
+    error_data = _build_error_history(
+        actuals_df, all_forecasts_df, cutoffHour, cutoffMinute
+    )
 
     # Build response
     data = []
@@ -90,10 +99,14 @@ async def get_latest_forecast(
 
         # Get uncertainty bands for this horizon
         if not error_data.empty:
-            p10_err, p90_err = compute_uncertainty_bands(error_data, horizon)
-            # Band: actual likely between forecast - p90_error and forecast - p10_error
-            unc_low = max(0, row["generation_mw"] - p90_err)
-            unc_high = max(0, row["generation_mw"] - p10_err)
+            errors = compute_uncertainty_bands(error_data, horizon)
+            if errors is not None:
+                p10_err, p90_err = errors
+                unc_low = max(0, row["generation_mw"] - p90_err)
+                unc_high = max(0, row["generation_mw"] - p10_err)
+            else:
+                unc_low = None
+                unc_high = None
         else:
             unc_low = None
             unc_high = None
@@ -114,10 +127,13 @@ async def get_latest_forecast(
             peak_mw=max(gens),
             min_mw=min(gens),
             avg_mw=round(sum(gens) / len(gens), 1),
-            total_mwh=round(sum(gens) * 0.5, 1),  # Each point is 30 min
+            total_mwh=round(
+                sum(gens) * FORECAST_INTERVAL_HOURS, 1
+            ),
             avg_horizon_hours=round(
                 sum(d.horizon_hours for d in data) / len(data), 1
             ),
+            interval_hours=FORECAST_INTERVAL_HOURS,
         )
     else:
         summary = None
@@ -134,6 +150,7 @@ def _build_error_history(
     actuals_df: pd.DataFrame,
     forecasts_df: pd.DataFrame,
     cutoff_hour: int,
+    cutoff_minute: int = 0,
 ) -> pd.DataFrame:
     """Build a DataFrame of errors with horizons for uncertainty band calculation.
 
@@ -142,12 +159,9 @@ def _build_error_history(
     """
     if actuals_df.empty or forecasts_df.empty:
         return pd.DataFrame(columns=["horizon_hours", "error_mw"])
+    actuals_df = hourly_actuals(actuals_df)
 
-    # Get unique settlement dates from actuals
-    if "settlement_date" in actuals_df.columns:
-        dates = sorted(actuals_df["settlement_date"].unique())
-    else:
-        return pd.DataFrame(columns=["horizon_hours", "error_mw"])
+    dates = sorted(actuals_df["start_time"].dt.strftime("%Y-%m-%d").unique())
 
     all_errors = []
 
@@ -157,15 +171,15 @@ def _build_error_history(
         except (ValueError, TypeError):
             continue
 
-        cutoff = compute_cutoff_time(d, cutoff_hour)
+        cutoff = compute_cutoff_time(d, cutoff_hour, cutoff_minute)
 
         # Get forecasts for this day
-        day_start = f"{d.isoformat()}T00:00:00+00:00"
-        day_end = f"{d.isoformat()}T23:59:59+00:00"
+        day_start = pd.Timestamp(d.isoformat(), tz="UTC")
+        day_end = day_start + pd.Timedelta(days=1)
 
         day_forecasts = forecasts_df[
-            (forecasts_df["start_time"] >= pd.Timestamp(day_start, tz="UTC"))
-            & (forecasts_df["start_time"] <= pd.Timestamp(day_end, tz="UTC"))
+            (forecasts_df["start_time"] >= day_start)
+            & (forecasts_df["start_time"] < day_end)
         ]
 
         if day_forecasts.empty:
@@ -176,7 +190,9 @@ def _build_error_history(
             continue
 
         # Join with actuals
-        day_actuals = actuals_df[actuals_df["settlement_date"] == d_str]
+        day_actuals = actuals_df[
+            actuals_df["start_time"].dt.strftime("%Y-%m-%d") == d_str
+        ]
         if day_actuals.empty:
             continue
 

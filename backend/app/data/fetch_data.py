@@ -10,8 +10,7 @@ and stores them in the local SQLite cache.
 import asyncio
 import argparse
 import logging
-import sys
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 
 from app.data.client import ElexonClient
 from app.data.cache import DataCache
@@ -44,8 +43,12 @@ async def fetch_forecasts(client: ElexonClient, cache: DataCache) -> int:
     Only keeps forecast rows where startTime is in January 2026.
     """
     logger.info("Fetching WINDFOR forecasts...")
-    publish_from = datetime.fromisoformat(f"{settings.forecast_fetch_start}T00:00:00+00:00")
-    publish_to = datetime.fromisoformat(f"{settings.scope_end}T23:59:59+00:00")
+    publish_from = datetime.fromisoformat(
+        f"{settings.forecast_fetch_start}T00:00:00+00:00"
+    )
+    publish_to = datetime.fromisoformat(
+        f"{settings.scope_end}T23:59:59+00:00"
+    )
 
     records = await client.fetch_windfor(publish_from, publish_to)
 
@@ -55,13 +58,32 @@ async def fetch_forecasts(client: ElexonClient, cache: DataCache) -> int:
     jan_records = []
     for r in records:
         st = r.get("startTime", "")
-        # startTime is like "2026-01-01T00:00:00Z"
-        if st >= f"{scope_start}T00:00:00" and st <= f"{scope_end}T23:59:59":
+        if f"{scope_start}T00:00:00Z" <= st <= f"{scope_end}T23:59:59Z":
             jan_records.append(r)
 
+    fetched_january_rows = len(jan_records)
+    unique_records = {
+        (r["startTime"], r["publishTime"]): r for r in jan_records
+    }
+    jan_records = list(unique_records.values())
+    duplicate_rows = fetched_january_rows - len(jan_records)
+    target_times = {r["startTime"] for r in jan_records}
+    horizons = [
+        (
+            datetime.fromisoformat(r["startTime"].replace("Z", "+00:00"))
+            - datetime.fromisoformat(r["publishTime"].replace("Z", "+00:00"))
+        ).total_seconds() / 3600
+        for r in jan_records
+    ]
     logger.info(
-        f"Filtered to {len(jan_records)} records targeting Jan 2026 "
-        f"(from {len(records)} total)"
+        "Filtered to %s forecasts targeting January 2026 from %s responses; "
+        "%s unique targets, %s duplicate keys; horizon %.1f–%.1f hours",
+        len(jan_records),
+        len(records),
+        len(target_times),
+        duplicate_rows,
+        min(horizons) if horizons else 0,
+        max(horizons) if horizons else 0,
     )
     count = cache.save_forecasts(jan_records)
     logger.info(f"Cached {count} forecast records")

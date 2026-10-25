@@ -1,10 +1,11 @@
-"""Elexon BMRS API client with pagination, retries, and rate limiting."""
+"""Elexon BMRS stream client with bounded date windows, retries, and rate limiting."""
 
-import httpx
 import asyncio
 import logging
-from datetime import datetime, timedelta, date
-from typing import List, Dict, Any, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.config import settings
@@ -15,9 +16,8 @@ logger = logging.getLogger(__name__)
 class ElexonClient:
     """Client for the Elexon BMRS Insights Solution API.
 
-    Handles pagination via date windowing (the stream endpoints return
-    all data without pagination, but we chunk requests by date to manage
-    response sizes and respect rate limits).
+    The stream endpoints return arrays rather than paginated envelopes, so
+    requests are partitioned into bounded date windows instead.
     """
 
     def __init__(self, base_url: Optional[str] = None):
@@ -27,12 +27,12 @@ class ElexonClient:
 
     async def _rate_limited_delay(self) -> None:
         """Enforce rate limiting between requests."""
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         elapsed = now - self._last_request_time
-        min_interval = 1.0 / self._rate_limit
+        min_interval = 1.0 / max(self._rate_limit, 0.01)
         if elapsed < min_interval:
             await asyncio.sleep(min_interval - elapsed)
-        self._last_request_time = asyncio.get_event_loop().time()
+        self._last_request_time = asyncio.get_running_loop().time()
 
     @retry(
         stop=stop_after_attempt(5),
@@ -54,8 +54,10 @@ class ElexonClient:
             return data
         # Some endpoints might wrap in an object
         if isinstance(data, dict) and "data" in data:
-            return data["data"]
-        return data if isinstance(data, list) else [data]
+            records = data["data"]
+            if isinstance(records, list):
+                return records
+        raise ValueError(f"Unexpected response shape from {url}: {type(data).__name__}")
 
     async def fetch_fuelhh_wind(
         self,
@@ -65,7 +67,7 @@ class ElexonClient:
         """Fetch half-hourly actual wind generation (FUELHH).
 
         Uses settlementDate range filtering and filters for fuelType=WIND.
-        Fetches in daily chunks to manage response sizes.
+        Fetches in bounded weekly chunks to manage response sizes.
 
         Args:
             start_date: First settlement date (inclusive)
@@ -78,16 +80,16 @@ class ElexonClient:
         current = start_date
 
         while current <= end_date:
-            # Fetch one day at a time
+            # A week is small enough for FUELHH and reduces request overhead.
             chunk_end = min(current + timedelta(days=6), end_date)
             params = {
                 "settlementDateFrom": current.isoformat(),
                 "settlementDateTo": chunk_end.isoformat(),
+                "fuelType": "WIND",
             }
 
             try:
                 records = await self._get("/datasets/FUELHH/stream", params)
-                # Filter for WIND fuel type
                 wind_records = [r for r in records if r.get("fuelType") == "WIND"]
                 all_records.extend(wind_records)
                 logger.info(
@@ -122,8 +124,10 @@ class ElexonClient:
             List of forecast records
         """
         all_records: List[Dict[str, Any]] = []
+        publish_from = publish_from.astimezone(timezone.utc)
+        publish_to = publish_to.astimezone(timezone.utc)
         current = publish_from
-        chunk_hours = 6  # 6-hour chunks to manage response size
+        chunk_hours = 6  # Stream responses are arrays and have no page token.
 
         while current < publish_to:
             chunk_end = min(current + timedelta(hours=chunk_hours), publish_to)

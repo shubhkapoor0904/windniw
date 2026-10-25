@@ -8,8 +8,8 @@ import sqlite3
 import json
 import os
 import logging
-from datetime import datetime, date
-from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 import pandas as pd
@@ -52,6 +52,14 @@ class DataCache:
                     PRIMARY KEY (start_time, publish_time)
                 );
 
+                CREATE TABLE IF NOT EXISTS raw_records (
+                    dataset TEXT NOT NULL,
+                    record_key TEXT NOT NULL,
+                    raw_json TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL,
+                    PRIMARY KEY (dataset, record_key)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_forecasts_start
                     ON forecasts(start_time);
                 CREATE INDEX IF NOT EXISTS idx_forecasts_publish
@@ -81,13 +89,12 @@ class DataCache:
             Number of records inserted/updated
         """
         conn = self._get_conn()
-        count = 0
         try:
             for r in records:
-                start_time = r.get("startTime", "")
-                settlement_date = r.get("settlementDate", "")
-                settlement_period = r.get("settlementPeriod", 0)
-                generation = r.get("generation", 0.0)
+                start_time = r["startTime"]
+                settlement_date = r["settlementDate"]
+                settlement_period = int(r["settlementPeriod"])
+                generation = float(r["generation"])
 
                 conn.execute(
                     """INSERT OR REPLACE INTO actuals
@@ -95,19 +102,21 @@ class DataCache:
                        VALUES (?, ?, ?, ?)""",
                     (start_time, settlement_date, settlement_period, generation),
                 )
-                count += 1
+                self._save_raw_record(
+                    conn, "FUELHH_WIND", start_time, r
+                )
 
             # Update metadata
             conn.execute(
                 """INSERT OR REPLACE INTO fetch_metadata (dataset, last_fetched, record_count)
                    VALUES (?, ?, ?)""",
-                ("FUELHH_WIND", datetime.utcnow().isoformat(), count),
+                ("FUELHH_WIND", datetime.now(timezone.utc).isoformat(), len(records)),
             )
             conn.commit()
-            logger.info(f"Saved {count} actual records to cache")
+            logger.info(f"Saved {len(records)} actual records to cache")
         finally:
             conn.close()
-        return count
+        return len(records)
 
     def save_forecasts(self, records: List[Dict[str, Any]]) -> int:
         """Save WINDFOR records to cache.
@@ -119,12 +128,11 @@ class DataCache:
             Number of records inserted/updated
         """
         conn = self._get_conn()
-        count = 0
         try:
             for r in records:
-                start_time = r.get("startTime", "")
-                publish_time = r.get("publishTime", "")
-                generation = r.get("generation", 0.0)
+                start_time = r["startTime"]
+                publish_time = r["publishTime"]
+                generation = float(r["generation"])
 
                 conn.execute(
                     """INSERT OR REPLACE INTO forecasts
@@ -132,18 +140,38 @@ class DataCache:
                        VALUES (?, ?, ?)""",
                     (start_time, publish_time, generation),
                 )
-                count += 1
+                self._save_raw_record(
+                    conn, "WINDFOR", f"{start_time}|{publish_time}", r
+                )
 
             conn.execute(
                 """INSERT OR REPLACE INTO fetch_metadata (dataset, last_fetched, record_count)
                    VALUES (?, ?, ?)""",
-                ("WINDFOR", datetime.utcnow().isoformat(), count),
+                ("WINDFOR", datetime.now(timezone.utc).isoformat(), len(records)),
             )
             conn.commit()
-            logger.info(f"Saved {count} forecast records to cache")
+            logger.info(f"Saved {len(records)} forecast records to cache")
         finally:
             conn.close()
-        return count
+        return len(records)
+
+    @staticmethod
+    def _save_raw_record(
+        conn: sqlite3.Connection,
+        dataset: str,
+        record_key: str,
+        record: Dict[str, Any],
+    ) -> None:
+        conn.execute(
+            """INSERT OR REPLACE INTO raw_records
+               (dataset, record_key, raw_json, fetched_at) VALUES (?, ?, ?, ?)""",
+            (
+                dataset,
+                record_key,
+                json.dumps(record, separators=(",", ":"), sort_keys=True),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
 
     # ─── Read ──────────────────────────────────────────────
 
@@ -211,13 +239,13 @@ class DataCache:
 
             if target_start:
                 conditions.append("start_time >= ?")
-                params.append(target_start)
+                params.append(self._normalize_utc_iso(target_start))
             if target_end:
                 conditions.append("start_time <= ?")
-                params.append(target_end)
+                params.append(self._normalize_utc_iso(target_end))
             if publish_before:
                 conditions.append("publish_time <= ?")
-                params.append(publish_before)
+                params.append(self._normalize_utc_iso(publish_before))
 
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
@@ -232,6 +260,15 @@ class DataCache:
             return df
         finally:
             conn.close()
+
+    @staticmethod
+    def _normalize_utc_iso(value: str) -> str:
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+        return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ─── Meta ──────────────────────────────────────────────
 
